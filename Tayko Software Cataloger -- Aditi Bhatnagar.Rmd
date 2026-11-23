@@ -1,0 +1,671 @@
+---
+title: "Tayko-Software-Cataloger"
+author: "Aditi Bhatnagar"
+date: "2025-04-24"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Background
+
+Tayko is a software catalog firm that sells games and educational software. It started out as a software manufacturer and later added third-party titles to its offerings. It has recently put together a revised collection of items in a new catalog, which it is preparing to roll out in a mailing.
+
+
+Each catalog costs approximately $2 to mail (including printing, postage, and mailing costs). Estimate the gross profit that the firm could expect from the remaining 180,000 names if it selects them randomly from the pool.
+
+
+
+
+install.packages("remotes")
+remotes::install_version("gains", version = "1.2")
+
+
+
+
+**Step 1:** Load dataset
+```{r}
+Tayko.df <- read.csv("Tayko.csv",header=TRUE)
+```
+
+**Step 2:** Estimate Gross Profit
+```{r}
+cost_per_mail <- 2
+response_rate <- 0.053
+number_of_left_entries <- 180000
+average_spend <- mean(Tayko.df[Tayko.df$Purchase==1,]$Spending)
+gross_profit <- (average_spend * response_rate - cost_per_mail) * number_of_left_entries
+gross_profit
+```
+
+
+
+Partition the data randomly into a training set (800 records), validation set (700 records), and test set (500 records).
+
+Develop a model for classifying a customer as a purchaser or nonpurchaser (Note: Use only the training set for running the model)
+We decided to attempt the following methods:
+
+1. Step-wise logistic regression (using backward elimination)
+2. Naive Bayes 
+3. KNN Model
+4. CART
+
+#### Approach 1: Step-wise logistic regression (using backward elimination)
+
+**Step 1:** Load the data and partition the data randomly into a training set (800 records), validation
+set (700 records), and test set (500 records).
+
+```{r}
+Tayko.df <- read.csv("Tayko.csv",header=TRUE)
+#dropping the unwanted column: last_update_days_ago and 1st_update_days_ago
+Tayko.df <- Tayko.df[,-c(19,20)]
+
+names(Tayko.df)
+set.seed(6210)
+all_rows <- rownames(Tayko.df)
+train_rows <- sample(all_rows,800)
+valid_rows <- sample(setdiff(all_rows,train_rows),700)
+test_rows <- setdiff(all_rows,union(train_rows,valid_rows))
+
+train.df <- Tayko.df[train_rows, ]
+valid.df <- Tayko.df[valid_rows, ]
+test.df <- Tayko.df[test_rows, ]
+
+# Check partition sizes
+cat("Training set size:", nrow(train.df), "\n")
+cat("Validation set size:", nrow(valid.df), "\n")
+cat("Test set size:", nrow(test.df), "\n")
+```
+
+**Step 2:** Run step-wise logistic regression using backward elimination to select
+the best subset of variables
+
+```{r}
+lr_model <- glm(Purchase ~ .-Spending- sequence_number, data = train.df, family = "binomial");
+lr_model_b <- step(lr_model, direction = "backward");
+
+```
+NOTE: We drop Spending because it leaks future information. At the time of mailing the catalog, Tayko would not know how much a customer will spend — only demographic and behavioral history are available. Spending and Purchase are highly correlated which could lead to incorrect high model accuracy and unrealistic predictions
+
+**Step 3:** Create Confusion Matrixes for the validation set
+
+**Default Cutoff (0.5) **
+```{r}
+#table(valid.df$Purchase)
+
+# 1. Predict purchase probabilities on validation data
+valid.prob <- predict(lr_model_b, newdata = valid.df, type = "response")
+
+# 2. Classify purchasers vs non-purchasers with threshold 0.5
+valid.class <- ifelse(valid.prob >= 0.5, 1, 0)
+
+# 3. Confusion matrix for validation set
+library(caret)
+lg.cm <- confusionMatrix(as.factor(valid.class), as.factor(valid.df$Purchase), positive = "1")
+print(lg.cm)
+```
+
+**What if the cut off was at 0.8?**
+```{r}
+
+# 1. Predict purchase probabilities on validation data
+valid.prob1 <- predict(lr_model_b, newdata = valid.df, type = "response")
+
+# 2. Classify purchasers vs non-purchasers with threshold 0.5
+valid.class1 <- ifelse(valid.prob >= 0.8, 1, 0)
+
+# 3. Confusion matrix for validation set
+library(caret)
+lg.cm1 <- confusionMatrix(as.factor(valid.class1), as.factor(valid.df$Purchase), positive = "1")
+print(lg.cm1)
+
+```
+
+**What if the cut off was at 0.2?** 
+```{r}
+# 1. Predict purchase probabilities on validation data
+valid.prob2 <- predict(lr_model_b, newdata = valid.df, type = "response")
+
+# 2. Classify purchasers vs non-purchasers with threshold 0.5
+valid.class2 <- ifelse(valid.prob >= 0.2, 1, 0)
+
+# 3. Confusion matrix for validation set
+library(caret)
+lg.cm2 <- confusionMatrix(as.factor(valid.class2), as.factor(valid.df$Purchase), positive = "1")
+print(lg.cm2)
+
+```
+
+**Step 4:** Plot the Lift Chart
+```{r}
+# Load the gains package
+library(gains)
+
+# 1. Predict probabilities on the validation set
+pred.prob <- predict(lr_model_b, newdata = valid.df, type = "response")
+
+# 2. Create the gain object
+gain <- gains(actual = valid.df$Purchase, 
+              predicted = pred.prob, 
+              groups = 100)
+
+# 3. Plot the Lift Chart
+plot(c(0, gain$cume.pct.of.total * sum(valid.df$Purchase)) ~ c(0, gain$cume.obs),
+     xlab = "# Cases", 
+     ylab = "Cumulative Purchasers Captured", 
+     main = "Lift Chart - Logistic Regression Model (Validation Set)",
+     type = "l", 
+     lwd = 2)
+
+# 4. Add the baseline (random model)
+lines(c(0, sum(valid.df$Purchase)) ~ c(0, dim(valid.df)[1]), lty = 2)
+```
+
+#### Approach 2: Naive Bayes
+
+**Step 1:** Load the data and partition the data randomly into a training set (800 records), validation
+set (700 records), and test set (500 records).
+
+```{r}
+Tayko.df <- read.csv("Tayko.csv",header=TRUE)
+#dropping the unwanted column: last_update_days_ago and 1st_update_days_ago
+Tayko.df <- Tayko.df[,-c(19,20)]
+
+names(Tayko.df)
+set.seed(6210)
+all_rows <- rownames(Tayko.df)
+train_rows <- sample(all_rows,800)
+valid_rows <- sample(setdiff(all_rows,train_rows),700)
+test_rows <- setdiff(all_rows,union(train_rows,valid_rows))
+
+train.df <- Tayko.df[train_rows, ]
+valid.df <- Tayko.df[valid_rows, ]
+test.df <- Tayko.df[test_rows, ]
+
+# Check partition sizes
+cat("Training set size:", nrow(train.df), "\n")
+cat("Validation set size:", nrow(valid.df), "\n")
+cat("Test set size:", nrow(test.df), "\n")
+```
+
+**Step 2:** Build Naive Bayes model on training set
+
+```{r}
+# 0. Drop 'Spending' from training and validation sets (if not already done)
+train.nb <- train.df[ , !(names(train.df) %in% c("Spending", "sequence_number")) ]
+valid.nb <- valid.df[ , !(names(valid.df) %in% c("Spending", "sequence_number")) ]
+
+# 1. Build Naive Bayes model on training set
+library(e1071)
+nb_model <- naiveBayes(factor(Purchase) ~ ., data = train.nb)
+nb_model
+
+```
+
+**Step 3:** Predict probabilities on validation set
+```{r}
+nb_valid.prob <- predict(nb_model, newdata = valid.nb, type = "raw")[,2]  # Get probability for purchaser (class 1)
+```
+
+**Step 4:** Confusion Matrix on validation set
+```{r}
+library(caret)
+
+# Classify using 0.5 threshold
+nb_valid.class <- ifelse(nb_valid.prob >= 0.5, 1, 0)
+nb.cm <- confusionMatrix(factor(nb_valid.class),factor(valid.nb$Purchase), positive = "1")
+print(nb.cm)
+```
+
+**Step 5**: Plot The Lift Chart
+```{r}
+library(gains)
+
+nb_gain <- gains(actual = valid.nb$Purchase, predicted = nb_valid.prob, groups = 100)
+
+plot(c(0, nb_gain$cume.pct.of.total * sum(valid.nb$Purchase)) ~ c(0, nb_gain$cume.obs),
+     xlab = "# Cases", 
+     ylab = "Cumulative Purchasers Captured", 
+     main = "Lift Chart - Naive Bayes Model (Validation Set)",
+     type = "l", 
+     lwd = 2)
+
+lines(c(0, sum(valid.nb$Purchase)) ~ c(0, dim(valid.nb)[1]), lty = 2)
+```
+
+#### Approach 3: KNN Model
+
+**Step 1:** Load the data and partition the data randomly into a training set (800 records), validation
+set (700 records), and test set (500 records).
+
+```{r}
+Tayko.df <- read.csv("Tayko.csv",header=TRUE)
+names(Tayko.df)
+set.seed(6210)
+all_rows <- rownames(Tayko.df)
+train_rows <- sample(all_rows,800)
+valid_rows <- sample(setdiff(all_rows,train_rows),700)
+test_rows <- setdiff(all_rows,union(train_rows,valid_rows))
+
+train.df <- Tayko.df[train_rows, ]
+valid.df <- Tayko.df[valid_rows, ]
+test.df <- Tayko.df[test_rows, ]
+
+# Check partition sizes
+cat("Training set size:", nrow(train.df), "\n")
+cat("Validation set size:", nrow(valid.df), "\n")
+cat("Test set size:", nrow(test.df), "\n")
+```
+
+**Step 2:** Normalize Necessary Columns
+```{r}
+train.norm <- train.df
+valid.norm <- valid.df
+full.norm <- Tayko.df
+
+predictor.cols <- setdiff(names(Tayko.df), c("Purchase", "Spending", "sequence_number"))
+
+norm.values <- preProcess(train.df[, predictor.cols], method=c("center", "scale"))
+
+train.norm[, predictor.cols] <- predict(norm.values, train.df[, predictor.cols])
+valid.norm[, predictor.cols] <- predict(norm.values, valid.df[, predictor.cols])
+full.norm[, predictor.cols]  <- predict(norm.values, Tayko.df[, predictor.cols])
+
+```
+
+**Step 3:** Find the best K-Value
+```{r}
+
+library(FNN)
+# Prepare to store accuracy for each value of k
+accuracy.df <- data.frame(k =1:20, accuracy = rep(0, 20))
+
+# Loop over k values from 1 to 20
+for (i in 1:20) {
+  knn.pred <- knn(train = train.norm[, predictor.cols],  
+                  test  = valid.norm[, predictor.cols],
+                  cl    = train.norm$Purchase,
+                  k     = i)
+  
+# store the accuracy
+accuracy.df[i, 2] <- confusionMatrix(as.factor(knn.pred),as.factor(valid.norm$Purchase))$overall["Accuracy"]
+}
+
+#store theaccuracy table
+print(accuracy.df)
+
+```
+
+**Step 4:** Display Confusion Matrix
+```{r}
+optimal.k <- 3
+
+# Generate predictions for the validation set using k = 3
+knn.pred <- knn(train = train.norm[, predictor.cols],
+                test  = valid.norm[, predictor.cols],
+                cl    = train.norm$Purchase,
+                k     = optimal.k)
+
+# Display full confusion matrix
+knn.cm <- confusionMatrix(as.factor(knn.pred),
+                as.factor(valid.norm$Purchase),
+                positive = "1")
+
+print(knn.cm)
+
+```
+
+#### Approach #4: CART
+
+**Step 1:** Load the data and partition the data randomly into a training set (800 records), validation
+set (700 records), and test set (500 records).
+
+```{r}
+Tayko.df <- read.csv("Tayko.csv",header=TRUE)
+
+# Eliminate "sequence_number" & "Spending" variable. "Spending" is related(homogeneous) to the "Purchase" column, potentially leading to overfitting.
+Tayko.df <- read.csv("Tayko.csv",header=TRUE)
+Tayko.df <- Tayko.df[ , -c(1,19,20,25)]
+head(Tayko.df)
+
+set.seed(6210)
+
+full_rows <- nrow(Tayko.df)
+
+training_rows <- sample(full_rows, 800)
+validation_rows <- sample(setdiff(full_rows, training_rows), 700)
+test_rows <- sample(setdiff(full_rows, union(training_rows,validation_rows)), 500)
+```
+
+**Step 2:** Scale necessary columns
+```{r}
+# scale freq and spending field
+columns_to_scale <- c("Freq")
+Tayko.df[columns_to_scale] <- scale(Tayko.df[columns_to_scale])
+
+dim(Tayko.df)
+head(Tayko.df)
+```
+
+**Step 3:** Define and plot tree
+```{r}
+# CART Model --- IMPURE TERMINAL NODES DUE TO MIX OF CLASSES IN THE NODES
+library(rpart)
+library(rpart.plot)
+
+# Subset the data
+training.df <- Tayko.df[training_rows, ]
+validation.df <- Tayko.df[validation_rows, ]
+test.df <- Tayko.df[test_rows, ]
+
+# Define the tree
+train_ct <- rpart(Purchase ~ ., data = training.df, method = "class")
+
+# Plot the tree
+prp(train_ct, type = 1, extra = 1, under = TRUE, split.font = 1, varlen = -10,
+   box.col=ifelse(train_ct$frame$var == "<leaf>", 'gray', 'white'))
+```
+
+FULL GROWN TREE where cp = 0 to process until it reaches pure leaves
+```{r}
+
+# Define the tree
+pure_ct <- rpart(Purchase ~ ., data = training.df, method = "class", cp = 0, minsplit = 1)
+
+# Count the number of leaves
+length(pure_ct$frame$var[pure_ct$frame$var == "<leaf>"])
+
+# Plot the tree
+prp(pure_ct, type = 1, extra = 1, under = TRUE, split.font = 1, varlen = -10,
+   box.col=ifelse(train_ct$frame$var == "<leaf>", 'gray', 'white'))
+```
+
+**Step 3:** Show confusion matrices and accurarcy for Default and Full Trees
+```{r}
+# Confusion Matrices and Accuracy for the Default and Full trees
+default.ct.point.pred.train <- predict(train_ct, training.df, type = "class")
+
+library(caret)
+confusionMatrix(default.ct.point.pred.train, as.factor(training.df$Purchase), positive = "1")
+```
+
+**Step 4:** Prune for most optimal complexity
+```{r}
+# CART MODEL --- Pruning for most optimal complexity
+optimal_ct <- rpart(Purchase ~ ., data = training.df, method ="class",
+                    cp = 0.00001, minsplit = 5, xval = 5)
+
+printcp(optimal_ct) # used to identify the most optimal ct with the lowest error
+```
+
+```{r}
+# CART MODEL --- Most optimal pruned model
+pruned_ct <- prune(optimal_ct, 
+                   cp = optimal_ct$cptable[which.min(optimal_ct$cptable[,"xerror"]),"CP"])
+
+length(pruned_ct$frame$var[pruned_ct$frame$var == "<leaf>"])
+
+prp(pruned_ct, type = 1, extra = 1, split.font = 1, varlen = -10,
+    box.col=ifelse(pruned_ct$frame$var == "<leaf>", 'gray', 'white'))
+
+# Predict on the validation set using the pruned tree
+pruned.pred <- predict(pruned_ct, newdata = validation.df, type = "class")
+
+# Display the confusion matrix
+cart_pruned.cm <- confusionMatrix(pruned.pred, as.factor(validation.df$Purchase), positive = "1")
+print(cart_pruned.cm)
+
+
+```
+
+
+#### Final Results
+
+```{r}
+
+# Extract metrics
+model.names <- c("Logistic Regression", "Naive Bayes", "KNN", "CART (Pruned)")
+
+accuracy <- c(lg.cm$overall["Accuracy"],
+              nb.cm$overall["Accuracy"],
+              knn.cm$overall["Accuracy"],
+              cart_pruned.cm$overall["Accuracy"])
+
+sensitivity <- c(lg.cm$byClass["Sensitivity"],
+                 nb.cm$byClass["Sensitivity"],
+                 knn.cm$byClass["Sensitivity"],
+                 cart_pruned.cm$byClass["Sensitivity"])
+
+specificity <- c(lg.cm$byClass["Specificity"],
+                 nb.cm$byClass["Specificity"],
+                 knn.cm$byClass["Specificity"],
+                 cart_pruned.cm$byClass["Specificity"])
+
+# Create summary data frame
+comparison.df <- data.frame(
+  Model = model.names,
+  Accuracy = round(accuracy, 3),
+  Sensitivity = round(sensitivity, 3),
+  Specificity = round(specificity, 3)
+)
+
+print(comparison.df)
+
+
+```
+
+
+Develop a model for predicting spending among the purchasers.
+Create a vector of ID’s of only purchasers’ records (Purchase = 1).
+Partition this dataset into the training and validation records. (Use the same training/validation labels from earlier)
+
+Develop models for predicting spending. We decided to try to following:
+
+1. Multiple Linear Regression (using stepwise regression)
+2. Regression trees
+3. Neural Network Analysis
+
+#### Multiple Linear Regression (using stepwise regression)
+
+**Step 1:** Load the data and partition the data randomly into a training set (800 records), validation
+set (700 records), and test set (500 records).
+
+```{r}
+Tayko.df <- read.csv("Tayko.csv",header=TRUE)
+#dropping the unwanted column: last_update_days_ago and 1st_update_days_ago
+Tayko.df <- Tayko.df[,-c(19,20)]
+
+names(Tayko.df)
+set.seed(6210)
+all_rows <- rownames(Tayko.df)
+train_rows <- sample(all_rows,800)
+valid_rows <- sample(setdiff(all_rows,train_rows),700)
+test_rows <- setdiff(all_rows,union(train_rows,valid_rows))
+
+train.df <- Tayko.df[train_rows, ]
+valid.df <- Tayko.df[valid_rows, ]
+test.df <- Tayko.df[test_rows, ]
+
+# Check partition sizes
+cat("Training set size:", nrow(train.df), "\n")
+cat("Validation set size:", nrow(valid.df), "\n")
+cat("Test set size:", nrow(test.df), "\n")
+```
+
+**Step 2:** Scale necessary columns
+```{r}
+# scale freq and spending field
+columns_to_scale <- c("Freq", "Spending")
+Tayko.df[columns_to_scale] <- scale(Tayko.df[columns_to_scale])
+
+dim(Tayko.df)
+head(Tayko.df)
+```
+
+
+**Step 3**: Build linear regression model
+```{r}
+
+# Build linear regression model
+lm.model <- lm(Spending ~ ., data = train.df)
+
+# View summary (optional, shows significant predictors)
+summary(lm.model)
+```
+
+**Step 4**: Predict using validation set
+```{r}
+# Predict Spending for validation set
+lm.pred <- predict(lm.model, newdata = valid.df)
+```
+
+#### Approach 2: Regression trees
+
+**Step 1:** Load the data and partition the data randomly into a training set (800 records), validation
+set (700 records), and test set (500 records).
+
+```{r}
+Tayko.df <- read.csv("Tayko.csv",header=TRUE)
+#dropping the unwanted column: last_update_days_ago and 1st_update_days_ago
+Tayko.df <- Tayko.df[,-c(19,20)]
+
+names(Tayko.df)
+set.seed(6210)
+all_rows <- rownames(Tayko.df)
+train_rows <- sample(all_rows,800)
+valid_rows <- sample(setdiff(all_rows,train_rows),700)
+test_rows <- setdiff(all_rows,union(train_rows,valid_rows))
+
+train.df <- Tayko.df[train_rows, ]
+valid.df <- Tayko.df[valid_rows, ]
+test.df <- Tayko.df[test_rows, ]
+
+# Check partition sizes
+cat("Training set size:", nrow(train.df), "\n")
+cat("Validation set size:", nrow(valid.df), "\n")
+cat("Test set size:", nrow(test.df), "\n")
+```
+
+**Step 2:** Scale necessary columns
+```{r}
+# scale freq and spending field
+columns_to_scale <- c("Freq", "Spending")
+Tayko.df[columns_to_scale] <- scale(Tayko.df[columns_to_scale])
+
+dim(Tayko.df)
+head(Tayko.df)
+```
+
+**Step 3**: Build and plot regression tree
+```{r}
+library(rpart)
+library(rpart.plot)
+library(forecast)
+
+# Regression tree
+reg.tree <- rpart(Spending ~ ., data = train.df, method = "anova")
+```
+
+**Step 4**: Plot the tree
+```{r}
+# Plot tree
+prp(reg.tree, type = 1, extra = 101, under = TRUE, split.font = 1, varlen = -10)
+```
+
+**Step 5**: Predict using validation set
+```{r}
+# Predict Spending for validation set
+tree.pred <- predict(reg.tree, newdata = valid.df)
+
+options(scipen=999, digits = 3)
+accuracy(tree.pred, valid.df$Spending)
+r2 <- cor(tree.pred, valid.df$Spending)^2
+print(r2)
+
+```
+
+#### Approach 3: Neural Network Analysis
+
+**Step 1:** Load the data and partition the data randomly into a training set (800 records), validation
+set (700 records), and test set (500 records).
+
+```{r}
+Tayko.df <- read.csv("Tayko.csv",header=TRUE)
+#dropping the unwanted column: last_update_days_ago and 1st_update_days_ago
+Tayko.df <- Tayko.df[,-c(19,20)]
+
+names(Tayko.df)
+set.seed(6210)
+all_rows <- rownames(Tayko.df)
+train_rows <- sample(all_rows,800)
+valid_rows <- sample(setdiff(all_rows,train_rows),700)
+test_rows <- setdiff(all_rows,union(train_rows,valid_rows))
+
+train.df <- Tayko.df[train_rows, ]
+valid.df <- Tayko.df[valid_rows, ]
+test.df <- Tayko.df[test_rows, ]
+
+# Check partition sizes
+cat("Training set size:", nrow(train.df), "\n")
+cat("Validation set size:", nrow(valid.df), "\n")
+cat("Test set size:", nrow(test.df), "\n")
+```
+
+**Step 2:** Scale necessary columns
+```{r}
+# scale freq and spending field
+columns_to_scale <- c("Freq", "Spending")
+Tayko.df[columns_to_scale] <- scale(Tayko.df[columns_to_scale])
+
+dim(Tayko.df)
+head(Tayko.df)
+```
+
+**Step 3: Create Neural Network**
+```{r}
+library(neuralnet)
+library(caret)
+library(scales)
+
+nn <- neuralnet(Spending ~ .,
+                data = train.df, linear.output = FALSE, hidden = c(3, 3), 
+                threshold=0.01)
+
+plot(nn, rep="best")
+
+nn.results <- compute(nn, valid.df)
+```
+
+#### Final Results
+
+```{r}
+# Get R-squared for each model
+lm.r2 <- cor(lm.pred, valid.df$Spending)^2
+tree.r2 <- cor(tree.pred, valid.df$Spending)^2
+
+# For neural network, get prediction on validation data
+nn.pred <- compute(nn, valid.df)$net.result
+nn.r2 <- cor(nn.pred, valid.df$Spending)^2
+
+# Compute RMSE and MAE for each model
+lm.rmse <- sqrt(mean((lm.pred - valid.df$Spending)^2))
+tree.rmse <- sqrt(mean((tree.pred - valid.df$Spending)^2))
+nn.rmse <- sqrt(mean((nn.pred - valid.df$Spending)^2))
+
+lm.mae <- mean(abs(lm.pred - valid.df$Spending))
+tree.mae <- mean(abs(tree.pred - valid.df$Spending))
+nn.mae <- mean(abs(nn.pred - valid.df$Spending))
+
+# Create expanded summary data frame
+model.summary <- data.frame(
+  Model = c("Linear Regression", "Regression Tree", "Neural Network"),
+  R_squared = round(c(lm.r2, tree.r2, nn.r2), 3),
+  RMSE = round(c(lm.rmse, tree.rmse, nn.rmse), 2),
+  MAE = round(c(lm.mae, tree.mae, nn.mae), 2)
+)
+
+print(model.summary)
+
+```
